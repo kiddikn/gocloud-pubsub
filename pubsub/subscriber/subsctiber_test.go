@@ -3,6 +3,7 @@ package subscriber_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/pubsub/pstest"
@@ -16,32 +17,10 @@ import (
 )
 
 const (
-	emulatorProjectID      = "project-test"
-	emulatorTopicID        = "topic-test"
-	emulatorSubscriptionID = "subscription-test"
+	emulatorProjectID      = "project-testid"
+	emulatorTopicID        = "topic-testid"
+	emulatorSubscriptionID = "subscription-testid"
 )
-
-func setupEmulator(ctx context.Context) (string, *pubsub.Topic, error) {
-	srv := pstest.NewServer()
-	conn, err := grpc.Dial(srv.Addr, grpc.WithInsecure())
-	if err != nil {
-		return "", nil, err
-	}
-
-	client, err := pubsub.NewClient(ctx, emulatorProjectID, option.WithGRPCConn(conn))
-	if err != nil {
-		return "", nil, err
-	}
-	topic, err := client.CreateTopic(ctx, emulatorTopicID)
-	if err != nil {
-		return "", nil, err
-	}
-	if _, err := client.CreateSubscription(ctx, emulatorSubscriptionID, pubsub.SubscriptionConfig{Topic: topic}); err != nil {
-		return "", nil, err
-	}
-
-	return srv.Addr, topic, nil
-}
 
 func Test_Subscriber(t *testing.T) {
 	type args struct {
@@ -53,57 +32,92 @@ func Test_Subscriber(t *testing.T) {
 		description string
 		args        args
 		setup       func(*mock_subscriber.MockDispatcher)
-		wantErr     bool
 	}{
 		{
 			description: "Subscribeに成功",
 			args: args{
-				projectID:      "project-test",
-				subscriptionID: "subscription-test",
+				projectID:      emulatorProjectID,
+				subscriptionID: emulatorSubscriptionID,
 				publishMessages: []string{
 					"test1",
 					"test2",
 				},
 			},
 			setup: func(d *mock_subscriber.MockDispatcher) {
-				d.EXPECT().HandleMessage(gomock.Any(), "test1").Return(nil)
-				d.EXPECT().HandleMessage(gomock.Any(), "test2").Return(nil)
+				d.EXPECT().HandleMessage(gomock.Any(), []byte("test1")).Return(nil)
+				d.EXPECT().HandleMessage(gomock.Any(), []byte("test2")).Return(nil)
 			},
+		},
+		{
+			description: "project idの初期設定が不正な場合はメッセージを受け取らず終了",
+			args: args{
+				projectID:      "not-fosssund-project-test",
+				subscriptionID: emulatorSubscriptionID,
+			},
+			setup: func(d *mock_subscriber.MockDispatcher) {},
+		},
+		{
+			description: "subscription idの初期設定が不正な場合はメッセージを受け取らず終了",
+			args: args{
+				projectID:      emulatorProjectID,
+				subscriptionID: "not-fosssund-subscription-test",
+			},
+			setup: func(d *mock_subscriber.MockDispatcher) {},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.description, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			ctx := context.Background()
+			srv := pstest.NewServer()
+			defer srv.Close()
+			t.Setenv("PUBSUB_EMULATOR_HOST", srv.Addr)
 
-			addr, topic, err := setupEmulator(ctx)
+			conn, err := grpc.Dial(srv.Addr, grpc.WithInsecure())
 			if err != nil {
-				t.Fatal(err)
+				t.Fatal()
 			}
-			t.Setenv("PUBSUB_EMULATOR_HOST", addr)
+			defer conn.Close()
+
+			client, err := pubsub.NewClient(ctx, emulatorProjectID, option.WithGRPCConn(conn))
+			if err != nil {
+				t.Fatal()
+			}
+			defer client.Close()
+
+			topic, err := client.CreateTopic(ctx, emulatorTopicID)
+			if err != nil {
+				t.Fatal()
+			}
+			defer topic.Delete(context.Background())
+
+			sub, err := client.CreateSubscription(ctx, emulatorSubscriptionID, pubsub.SubscriptionConfig{Topic: topic})
+			if err != nil {
+				t.Fatal()
+			}
+			defer sub.Delete(context.Background())
 
 			ctrl := gomock.NewController(t)
 			mockDispacher := mock_subscriber.NewMockDispatcher(ctrl)
 			tt.setup(mockDispacher)
 
-			sub, err := subscriber.NewSubscriber(ctx, tt.args.projectID, tt.args.subscriptionID, 2, mockDispacher)
+			cctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			subscriber, err := subscriber.NewSubscriber(cctx, tt.args.projectID, tt.args.subscriptionID, 2, mockDispacher)
 			assert.NoError(t, err)
 
 			go func() {
-				// テスト対象のtをchannelで渡し終えた後に閉じることでRunのループを正常終了させる
-				defer cancel()
 				for _, m := range tt.args.publishMessages {
-					topic.Publish(ctx, &pubsub.Message{Data: []byte(m)})
+					topic.Publish(context.Background(), &pubsub.Message{Data: []byte(m)})
 				}
+				topic.Flush()
+				// Flushで全てのメッセージをpublishした後にsubscriberを終了させる
+				time.Sleep(1 * time.Second)
+				cancel()
 			}()
 
-			err = sub.Run(ctx)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-
+			err = subscriber.Run(cctx)
+			assert.NoError(t, err)
 		})
 	}
 }

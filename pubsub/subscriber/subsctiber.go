@@ -43,9 +43,10 @@ recvLoop:
 		msg, err := subscription.Receive(ctx)
 		if err != nil {
 			// Errors from Receive indicate that Receive will no longer succeed.
-			log.Printf("Receiving message: %v", err)
+			log.Printf("Receiving error: %v", err)
 			break
 		}
+		log.Printf("Receiving message: %v", msg)
 
 		// Wait if there are too many active handle goroutines and acquire the
 		// semaphore. If the context is canceled, stop waiting and start shutting
