@@ -48,7 +48,7 @@ recvLoop:
 			}
 			// Errors from Receive indicate that Receive will no longer succeed.
 			log.Printf("Receiving error: %v", err)
-			return err
+			break
 		}
 		log.Printf("Receiving message: %v", msg)
 
