@@ -2,6 +2,7 @@ package subscriber_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -32,6 +33,7 @@ func Test_Subscriber(t *testing.T) {
 		description string
 		args        args
 		setup       func(*mock_subscriber.MockDispatcher)
+		wantAcks    int
 	}{
 		{
 			description: "Subscribeに成功",
@@ -45,8 +47,10 @@ func Test_Subscriber(t *testing.T) {
 			},
 			setup: func(d *mock_subscriber.MockDispatcher) {
 				d.EXPECT().HandleMessage(gomock.Any(), []byte("test1")).Return(nil)
+				d.EXPECT().HandleMessage(gomock.Any(), []byte("test2")).Return(fmt.Errorf("err")).Times(2) // NACKでリトライが来ることの確認
 				d.EXPECT().HandleMessage(gomock.Any(), []byte("test2")).Return(nil)
 			},
+			wantAcks: 2,
 		},
 		{
 			description: "project idの初期設定が不正な場合はメッセージを受け取らず終了",
@@ -54,7 +58,8 @@ func Test_Subscriber(t *testing.T) {
 				projectID:      "not-fosssund-project-test",
 				subscriptionID: emulatorSubscriptionID,
 			},
-			setup: func(d *mock_subscriber.MockDispatcher) {},
+			setup:    func(d *mock_subscriber.MockDispatcher) {},
+			wantAcks: 0,
 		},
 		{
 			description: "subscription idの初期設定が不正な場合はメッセージを受け取らず終了",
@@ -62,7 +67,8 @@ func Test_Subscriber(t *testing.T) {
 				projectID:      emulatorProjectID,
 				subscriptionID: "not-fosssund-subscription-test",
 			},
-			setup: func(d *mock_subscriber.MockDispatcher) {},
+			setup:    func(d *mock_subscriber.MockDispatcher) {},
+			wantAcks: 0,
 		},
 	}
 	for _, tt := range tests {
@@ -118,6 +124,16 @@ func Test_Subscriber(t *testing.T) {
 
 			err = subscriber.Run(cctx)
 			assert.NoError(t, err)
+
+			msgs := srv.Messages()
+			var acks int
+			for _, m := range msgs {
+				if m.Acks != 1 {
+					t.Errorf("unexpected number of acks")
+				}
+				acks++
+			}
+			assert.Equal(t, tt.wantAcks, acks)
 		})
 	}
 }
