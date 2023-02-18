@@ -3,6 +3,7 @@ package subscriber
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
@@ -42,9 +43,12 @@ recvLoop:
 	for {
 		msg, err := subscription.Receive(ctx)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				break
+			}
 			// Errors from Receive indicate that Receive will no longer succeed.
 			log.Printf("Receiving error: %v", err)
-			break
+			return err
 		}
 		log.Printf("Receiving message: %v", msg)
 
